@@ -8,7 +8,7 @@
     (export sym pkg)))
 
 (defpackage #:schema-protocol-xsd
-  (:use #:cl)
+  (:use #:cl #:xml-protocol)
   (:nicknames #:stack-schema-xsd)
   (:import-from #:closer-mop
                 #:ensure-class
@@ -72,8 +72,7 @@
            #:xsd-schema-validator-p
            #:xsd-schema-validation-error
            #:xsd-schema
-           #:xml-elem
-           #:xml-elem-p
+           #:decode-validating
            #:+xsd-ns+
            #:+xsd-vc-ns+))
 

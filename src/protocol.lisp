@@ -12,5 +12,8 @@
 (defmethod xsd-schema ((schema xsd-schema-document) &key (version :1.0))
   (emit schema :version version))
 
-(defmethod xsd-schema ((schema xml-elem) &key (version :1.0))
+(defmethod xsd-schema ((schema xml-element) &key (version :1.0))
+  (emit schema :version version))
+
+(defmethod xsd-schema ((schema xml-document) &key (version :1.0))
   (emit schema :version version))

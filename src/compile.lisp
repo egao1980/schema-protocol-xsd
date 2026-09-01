@@ -35,17 +35,17 @@
                 :test #'string-equal))))
 
 (defun register-schema (ctx root)
-  (dolist (c (xe-children root))
-    (when (xml-elem-p c)
-      (let ((n (xe-attr c "name")))
+  (dolist (c (xml-element-children root))
+    (when (xml-element-p c)
+      (let ((n (xml-attr c "name")))
         (cond
-          ((xe-named-p c "defaultOpenContent")
+          ((xml-named-p c "defaultOpenContent")
            (setf (compile-ctx-open-content ctx) c))
-          ((xe-named-p c "complexType")
+          ((xml-named-p c "complexType")
            (when n (setf (gethash n (compile-ctx-types ctx)) c)))
-          ((xe-named-p c "simpleType")
+          ((xml-named-p c "simpleType")
            (when n (setf (gethash n (compile-ctx-types ctx)) c)))
-          ((xe-named-p c "element")
+          ((xml-named-p c "element")
            (when n (setf (gethash n (compile-ctx-elements ctx)) c))))))))
 
 (defun lookup-type (ctx name)
@@ -61,8 +61,8 @@
                       :direct-slots '()))))
 
 (defun parse-occurs (elem)
-  (let* ((min (xe-attr elem "minOccurs" "1"))
-         (max (xe-attr elem "maxOccurs" "1"))
+  (let* ((min (xml-attr elem "minOccurs" "1"))
+         (max (xml-attr elem "maxOccurs" "1"))
          (min-n (or (ignore-errors (parse-integer min :junk-allowed t)) 1))
          (unbounded (string-equal max "unbounded"))
          (max-n (if unbounded :unbounded
@@ -70,44 +70,44 @@
     (values min-n max-n)))
 
 (defun nillable-p (elem)
-  (string-equal (xe-attr elem "nillable") "true"))
+  (string-equal (xml-attr elem "nillable") "true"))
 
 (defun open-content-allows-p (elem)
-  (let ((oc (xe-kid elem "openContent")))
-    (and oc (not (string-equal (xe-attr oc "mode") "none")))))
+  (let ((oc (xml-child elem "openContent")))
+    (and oc (not (string-equal (xml-attr oc "mode") "none")))))
 
 (defun extra-from (elem &optional ctx)
   (cond
     ((open-content-allows-p elem) :allow)
-    ((or (xe-kid elem "any")
-         (and (xe-kid elem "sequence")
-              (xe-kid (xe-kid elem "sequence") "any"))
-         (and (xe-kid elem "choice")
-              (xe-kid (xe-kid elem "choice") "any"))
-         (and (xe-kid elem "all")
-              (xe-kid (xe-kid elem "all") "any")))
+    ((or (xml-child elem "any")
+         (and (xml-child elem "sequence")
+              (xml-child (xml-child elem "sequence") "any"))
+         (and (xml-child elem "choice")
+              (xml-child (xml-child elem "choice") "any"))
+         (and (xml-child elem "all")
+              (xml-child (xml-child elem "all") "any")))
      :allow)
     ((and ctx (compile-ctx-open-content ctx)
-          (not (string-equal (xe-attr (compile-ctx-open-content ctx) "mode") "none")))
+          (not (string-equal (xml-attr (compile-ctx-open-content ctx) "mode") "none")))
      :allow)
     (t :forbid)))
 
 (defun alternatives-of (elem)
-  (and (xml-elem-p elem) (xe-kids elem "alternative")))
+  (and (xml-element-p elem) (xml-children-named elem "alternative")))
 
 (defun content-group (elem)
-  (or (xe-kid elem "sequence")
-      (xe-kid elem "choice")
-      (xe-kid elem "all")))
+  (or (xml-child elem "sequence")
+      (xml-child elem "choice")
+      (xml-child elem "all")))
 
 (defun restriction-of (elem)
-  (or (xe-kid elem "restriction")
-      (let ((st (xe-kid elem "simpleType")))
-        (and st (xe-kid st "restriction")))))
+  (or (xml-child elem "restriction")
+      (let ((st (xml-child elem "simpleType")))
+        (and st (xml-child st "restriction")))))
 
 (defun enum-values (restriction)
-  (mapcar (lambda (e) (parse-enum-value (xe-attr e "value")))
-          (xe-kids restriction "enumeration")))
+  (mapcar (lambda (e) (parse-enum-value (xml-attr e "value")))
+          (xml-children-named restriction "enumeration")))
 
 (defun parse-enum-value (string)
   (cond
@@ -120,8 +120,8 @@
     (t string)))
 
 (defun facet-int (restriction name)
-  (let ((el (xe-kid restriction name)))
-    (and el (ignore-errors (parse-integer (xe-attr el "value") :junk-allowed t)))))
+  (let ((el (xml-child restriction name)))
+    (and el (ignore-errors (parse-integer (xml-attr el "value") :junk-allowed t)))))
 
 (defun builtin-lisp-type (type restriction)
   (let ((n (local-name type)))
@@ -145,9 +145,9 @@
 
 (defun simple-type-spec (elem ctx)
   (let* ((restriction (restriction-of elem))
-         (union (or (xe-kid elem "union")
-                    (and (xe-kid elem "simpleType")
-                         (xe-kid (xe-kid elem "simpleType") "union"))))
+         (union (or (xml-child elem "union")
+                    (and (xml-child elem "simpleType")
+                         (xml-child (xml-child elem "simpleType") "union"))))
          (enums (and restriction (enum-values restriction))))
     (cond
       (enums
@@ -155,8 +155,8 @@
            `(eql ,(first enums))
            `(member ,@enums)))
       (union
-       (let ((members (xe-attr union "memberTypes"))
-             (nested (xe-kids union "simpleType")))
+       (let ((members (xml-attr union "memberTypes"))
+             (nested (xml-children-named union "simpleType")))
          `(or ,@(append
                  (when members
                    (mapcar (lambda (tok)
@@ -164,7 +164,7 @@
                            (uiop:split-string members :separator " ")))
                  (mapcar (lambda (st) (simple-type-spec st ctx)) nested)))))
       (restriction
-       (builtin-lisp-type (or (xe-attr restriction "base") "xs:string") restriction))
+       (builtin-lisp-type (or (xml-attr restriction "base") "xs:string") restriction))
       ((and (stringp elem) (xsd-builtin-p elem))
        (builtin-lisp-type elem nil))
       (t 'string))))
@@ -179,37 +179,37 @@
              (error 'xsd-schema-ref-error
                     :ref node
                     :message "named type not in schema"))
-           (if (xe-named-p resolved "simpleType")
+           (if (xml-named-p resolved "simpleType")
                (simple-type-spec resolved ctx)
                (progn
                  (%ensure-shell ctx node)
                  (%fill-class ctx node resolved)
                  (%name-symbol node ctx))))))
-    ((xml-elem-p node)
+    ((xml-element-p node)
      (cond
-       ((xe-named-p node "simpleType")
+       ((xml-named-p node "simpleType")
         (simple-type-spec node ctx))
-       ((xe-named-p node "complexType")
-        (let ((n (or name-hint (xe-attr node "name")
+       ((xml-named-p node "complexType")
+        (let ((n (or name-hint (xml-attr node "name")
                      (gentemp "OBJ" (compile-ctx-package ctx)))))
           (%ensure-shell ctx n)
           (%fill-class ctx n node)
           (%name-symbol n ctx)))
-       ((xe-named-p node "element")
+       ((xml-named-p node "element")
         (element-type-spec node ctx :name-hint name-hint))
        (t t)))
     (t t)))
 
 (defun element-type-spec (elem ctx &key name-hint)
-  (let* ((type (xe-attr elem "type"))
-         (inline-simple (xe-kid elem "simpleType"))
-         (inline-complex (xe-kid elem "complexType"))
+  (let* ((type (xml-attr elem "type"))
+         (inline-simple (xml-child elem "simpleType"))
+         (inline-complex (xml-child elem "complexType"))
          (spec (cond
                  (inline-simple (simple-type-spec inline-simple ctx))
                  (inline-complex
                   (node-type-spec inline-complex ctx
-                                  :name-hint (or name-hint (xe-attr elem "name"))))
-                 (type (node-type-spec type ctx :name-hint (or name-hint (xe-attr elem "name"))))
+                                  :name-hint (or name-hint (xml-attr elem "name"))))
+                 (type (node-type-spec type ctx :name-hint (or name-hint (xml-attr elem "name"))))
                  (t t))))
     (multiple-value-bind (min max) (parse-occurs elem)
       (declare (ignore min))
@@ -223,7 +223,7 @@
             spec)))))
 
 (defun facet-slot-options (elem)
-  (let* ((restriction (restriction-of (or (xe-kid elem "simpleType") elem)))
+  (let* ((restriction (restriction-of (or (xml-child elem "simpleType") elem)))
          (opts '()))
     (when restriction
       (let ((minl (facet-int restriction "minLength"))
@@ -234,7 +234,7 @@
         (when maxl (setf opts (list* :max-length maxl opts)))
         (when mini (setf opts (list* :minimum mini opts)))
         (when maxi (setf opts (list* :maximum maxi opts)))))
-    (let* ((type (xe-attr elem "type"))
+    (let* ((type (xml-attr elem "type"))
            (n (and type (local-name type))))
       (cond
         ((and type (or (string-equal n "anyURI") (string-equal type "xs:anyURI")))
@@ -244,7 +244,7 @@
     opts))
 
 (defun property-slot (elem ctx)
-  (let* ((name (xe-attr elem "name"))
+  (let* ((name (xml-attr elem "name"))
          (sym (%name-symbol name ctx))
          (spec (element-type-spec elem ctx :name-hint name)))
     (multiple-value-bind (min max) (parse-occurs elem)
@@ -260,9 +260,9 @@
               (facet-slot-options elem)))))
 
 (defun discriminator-of (elem)
-  (let* ((ann (xe-kid elem "annotation"))
-         (app (and ann (xe-kid ann "appinfo")))
-         (disc (and app (xe-kid app "discriminator"))))
+  (let* ((ann (xml-child elem "annotation"))
+         (app (and ann (xml-child ann "appinfo")))
+         (disc (and app (xml-child app "discriminator"))))
     disc))
 
 (defun fill-from-alternatives (ctx name elem)
@@ -273,16 +273,16 @@
     (let ((prop nil)
           (pairs '()))
       (dolist (alt (alternatives-of elem))
-        (let ((type (xe-attr alt "type")))
+        (let ((type (xml-attr alt "type")))
           (when (and type (not (xsd-error-type-p type)))
-            (multiple-value-bind (p v) (parse-alternative-test (xe-attr alt "test"))
+            (multiple-value-bind (p v) (parse-alternative-test (xml-attr alt "test"))
               (when p
                 (setf prop (or prop p))
                 (push (cons v type) pairs))))))
       (unless (and prop pairs)
         (return-from fill-from-alternatives
-          (%fill-class ctx name (or (lookup-type ctx (xe-attr elem "type"))
-                                    (xe-kid elem "complexType")
+          (%fill-class ctx name (or (lookup-type ctx (xml-attr elem "type"))
+                                    (xml-child elem "complexType")
                                     elem))))
       (let* ((tag-sym (%name-symbol prop ctx))
              (slots `((:name ,tag-sym
@@ -317,12 +317,12 @@
   (and type (string-equal (local-name type) "error")))
 
 (defun %specialize-tag-slots (ctx vnode prop tag-value)
-  (let* ((seq (or (xe-kid vnode "sequence") (xe-kid vnode "choice")))
+  (let* ((seq (or (xml-child vnode "sequence") (xml-child vnode "choice")))
          (slots '()))
     (when seq
-      (dolist (el (xe-kids seq "element"))
+      (dolist (el (xml-children-named seq "element"))
         (let ((slot (property-slot el ctx)))
-          (when (and tag-value (string-equal (xe-attr el "name") prop))
+          (when (and tag-value (string-equal (xml-attr el "name") prop))
             (setf (getf slot :type) `(eql ,(parse-enum-value tag-value))))
           (push slot slots))))
     (nreverse slots)))
@@ -333,9 +333,9 @@
       (return-from fill-tagged (find-class sym)))
     (setf (gethash sym (compile-ctx-filled ctx)) t)
     (let* ((disc (discriminator-of elem))
-           (prop (or (and disc (xe-attr disc "propertyName")) "type"))
+           (prop (or (and disc (xml-attr disc "propertyName")) "type"))
            (tag-sym (%name-symbol prop ctx))
-           (choice (xe-kid elem "choice"))
+           (choice (xml-child elem "choice"))
            (slots `((:name ,tag-sym
                      :type t
                      :initargs (,(intern (symbol-name tag-sym) :keyword))
@@ -363,17 +363,17 @@
                                        :extra (extra-from vnode)))
                        (%fill-class ctx vname vnode :supers (list base))))))
           (when disc
-            (dolist (m (xe-kids disc "mapping"))
-              (let ((type (xe-attr m "type")))
+            (dolist (m (xml-children-named disc "mapping"))
+              (let ((type (xml-attr m "type")))
                 (when type
-                  (add-variant type (lookup-type ctx type) (xe-attr m "value"))))))
+                  (add-variant type (lookup-type ctx type) (xml-attr m "value"))))))
           (when choice
-            (dolist (el (xe-kids choice "element"))
-              (let ((type (or (xe-attr el "type") (xe-attr el "name"))))
+            (dolist (el (xml-children-named choice "element"))
+              (let ((type (or (xml-attr el "type") (xml-attr el "name"))))
                 (when (and type (not (gethash (%name-symbol type ctx)
                                               (compile-ctx-filled ctx))))
                   (add-variant type (or (lookup-type ctx type)
-                                        (xe-kid el "complexType"))))))))
+                                        (xml-child el "complexType"))))))))
         (find-class sym)))))
 
 (defun %fill-class (ctx name node &key supers)
@@ -388,7 +388,7 @@
     (let* ((seq (content-group node))
            (slots '()))
       (when seq
-        (dolist (el (xe-kids seq "element"))
+        (dolist (el (xml-children-named seq "element"))
           (push (property-slot el ctx) slots)))
       (ensure-class sym
                     :metaclass (find-class 'schema-class)
@@ -403,14 +403,14 @@
   (let* ((doc (parse-document source))
          (root (xsd-schema-root doc))
          (ctx (make-compile-ctx :package package)))
-    (unless (xe-named-p root "schema")
+    (unless (xml-named-p root "schema")
       (error 'xsd-schema-error
-             :message (format nil "expected xs:schema, got ~S" (xe-name root))))
+             :message (format nil "expected xs:schema, got ~S" (xml-qname root))))
     (register-schema ctx root)
-    (let* ((root-el (find-if (lambda (c) (xe-named-p c "element"))
-                             (xe-children root)))
+    (let* ((root-el (find-if (lambda (c) (xml-named-p c "element"))
+                             (xml-element-children root)))
            (root-name (or name
-                          (and root-el (xe-attr root-el "name"))
+                          (and root-el (xml-attr root-el "name"))
                           (gentemp "SCHEMA" package))))
       (setf (compile-ctx-root-name ctx) (%name-symbol root-name ctx))
       (%ensure-shell ctx (compile-ctx-root-name ctx))
@@ -420,9 +420,9 @@
                (compile-ctx-types ctx))
       (let ((node (or (and root-el (alternatives-of root-el) root-el)
                       (and root-el
-                           (or (lookup-type ctx (xe-attr root-el "type"))
-                               (xe-kid root-el "complexType")
-                               (xe-kid root-el "simpleType")))
+                           (or (lookup-type ctx (xml-attr root-el "type"))
+                               (xml-child root-el "complexType")
+                               (xml-child root-el "simpleType")))
                       (lookup-type ctx (string-downcase (symbol-name (compile-ctx-root-name ctx)))))))
         (unless node
           (error 'xsd-schema-error :message "no root complexType"))

@@ -7,7 +7,7 @@
   (member version '(:1.1 :xsd-1.1)))
 
 (defun xs (name &optional attrs &rest children)
-  (apply #'xe (concatenate 'string "xs:" name) attrs children))
+  (apply #'make-xml-element (concatenate 'string "xs:" name) attrs children))
 
 (defun enum-wire (value)
   (etypecase value
@@ -154,10 +154,10 @@
                      (element-attrs name :min min :max max :nillable nillable :type type)
                      (when inline (list inline)))))
       (when (and slot (slot-description slot))
-        (setf (xe-children el)
+        (setf (xml-element-children el)
               (cons (xs "annotation" nil
                         (xs "documentation" nil (slot-description slot)))
-                    (xe-children el))))
+                    (xml-element-children el))))
       el)))
 
 (defun slot-particle (slot class defs)
@@ -199,11 +199,11 @@
         (ensure-named-type vname defs)
         (push (xs "element" `(("name" . ,key) ("type" . ,key))) choices)
         (dolist (tv (variant-tag-values v tag))
-          (push (xe "mapping" `(("value" . ,(enum-wire tv)) ("type" . ,key))) mappings))))
+          (push (make-xml-element "mapping" `(("value" . ,(enum-wire tv)) ("type" . ,key))) mappings))))
     (xs "complexType" `(("name" . ,(string-downcase (symbol-name (class-name class)))))
         (xs "annotation" nil
             (xs "appinfo" nil
-                (apply #'xe "discriminator" `(("propertyName" . ,prop))
+                (apply #'make-xml-element "discriminator" `(("propertyName" . ,prop))
                        (nreverse mappings))))
         (apply #'xs "choice" nil (nreverse choices)))))
 
@@ -247,7 +247,7 @@
                   `(("name" . ,key) ("type" . "xs:anyType") ("minOccurs" . "0"))
                   (xs "annotation" nil
                       (xs "appinfo" nil
-                          (xe "readOnly" nil "true"))))
+                          (make-xml-element "readOnly" nil "true"))))
               particles)))
     (let ((extra (extra-any class))
           (kids (nreverse particles)))
@@ -279,7 +279,7 @@
     (let ((types '()))
       (maphash (lambda (k v)
                  (declare (ignore k))
-                 (when (xml-elem-p v)
+                 (when (xml-element-p v)
                    (push v types)))
                defs)
       (apply #'xs "schema"
@@ -295,7 +295,9 @@
   "SCHEMA-CLASS / name / instance / document → XML string (default) or document."
   (let ((doc (cond
                ((xsd-schema-document-p schema) schema)
-               ((xml-elem-p schema)
+               ((xml-document-p schema)
+                (parse-document schema :version version))
+               ((xml-element-p schema)
                 (make-instance 'xsd-schema-document :root schema :version version))
                ((and (stringp schema)
                      (plusp (length schema))
