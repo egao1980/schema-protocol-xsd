@@ -74,11 +74,12 @@
            #:xsd-schema
            #:xml-elem
            #:xml-elem-p
-           #:+xsd-ns+))
+           #:+xsd-ns+
+           #:+xsd-vc-ns+))
 
 (in-package #:schema-protocol-xsd)
 
 (unless (and (fboundp 'xsd-schema)
              (typep (symbol-function 'xsd-schema) 'generic-function))
   (defgeneric xsd-schema (schema &key version)
-    (:documentation "Emit an XSD 1.0 document (XML string).")))
+    (:documentation "Emit an XSD 1.0 or 1.1 document (XML string).")))

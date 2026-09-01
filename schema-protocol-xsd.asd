@@ -1,6 +1,6 @@
 (defsystem "schema-protocol-xsd"
-  :version "0.1.0"
-  :description "XSD 1.0 parse/generate/validate for schema-protocol"
+  :version "0.1.1"
+  :description "XSD 1.0/1.1 parse/generate/validate for schema-protocol"
   :author "egao1980"
   :license "MIT"
   :depends-on ("schema-protocol" "closer-mop" "cl-ppcre")
@@ -10,6 +10,7 @@
   :components ((:file "package")
                (:file "conditions")
                (:file "xml")
+               (:file "xpath")
                (:file "document")
                (:file "emit")
                (:file "compile")
@@ -23,7 +24,8 @@
   :serial t
   :components ((:file "package")
                (:file "xsd-schema-test")
-               (:file "validate-test"))
+               (:file "validate-test")
+               (:file "xsd-11-test"))
   :perform (test-op (o c)
              (unless (symbol-call :rove :run c)
                (error "tests failed for ~A" (component-name c)))))

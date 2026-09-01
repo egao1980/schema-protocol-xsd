@@ -8,7 +8,8 @@
   version
   types
   elements
-  root-element)
+  root-element
+  default-open)
 
 (defstruct vctx
   validator
@@ -32,9 +33,6 @@
 
 (defun object-p (value)
   (hash-table-p value))
-
-(defun array-p (value)
-  (and (vectorp value) (not (stringp value))))
 
 (defun lookup-named (validator name)
   (or (gethash (local-name name) (validator-types validator))
@@ -104,22 +102,6 @@
       (and (stringp value)
            (member value '("true" "false" "1" "0") :test #'string-equal))))
 
-(defun as-number (value)
-  (cond
-    ((realp value) value)
-    ((stringp value)
-     (let ((*read-eval* nil))
-       (ignore-errors (read-from-string value))))
-    (t nil)))
-
-(defun as-string (value)
-  (cond
-    ((stringp value) value)
-    ((keywordp value) (string-downcase (symbol-name value)))
-    ((symbolp value) (string-downcase (symbol-name value)))
-    ((numberp value) (princ-to-string value))
-    (t nil)))
-
 (defun type-matches (xsd-type value)
   (let ((n (local-name xsd-type)))
     (when (and (>= (length xsd-type) 3) (string= xsd-type "xs:" :end1 3))
@@ -130,6 +112,7 @@
       ((member n '("decimal" "float" "double") :test #'string-equal)
        (number-string-p value))
       ((string-equal n "boolean") (boolean-value-p value))
+      ((string-equal n "error") nil)
       ((string-equal n "anyType") t)
       ((string-equal n "anySimpleType")
        (or (stringp value) (realp value) (boolean-value-p value)))
@@ -155,7 +138,9 @@
         (mini (xe-kid restriction "minInclusive"))
         (maxi (xe-kid restriction "maxInclusive"))
         (pat (xe-kid restriction "pattern"))
-        (enums (xe-kids restriction "enumeration")))
+        (tz (xe-kid restriction "explicitTimezone"))
+        (enums (xe-kids restriction "enumeration"))
+        (assertions (xe-kids restriction "assertion")))
     (when (and minl str (< (length str) minl))
       (vfail ctx (format nil "minLength ~A" minl) value))
     (when (and maxl str (> (length str) maxl))
@@ -176,7 +161,27 @@
                         (or (equal ev value)
                             (and str (string-equal ev str)))))
                     enums)
-        (vfail ctx "enumeration" value)))))
+        (vfail ctx "enumeration" value)))
+    (when (and tz str)
+      (check-explicit-timezone ctx (xe-attr tz "value") str))
+    (dolist (a assertions)
+      (unless (xpath-true-p (xe-attr a "test") value)
+        (vfail ctx (format nil "assertion ~S" (xe-attr a "test")) value)))))
+
+(defun datetime-has-timezone-p (string)
+  (let ((n (length string)))
+    (and (>= n 1)
+         (or (find (char string (1- n)) "Zz")
+             (and (>= n 6)
+                  (find (char string (- n 6)) "+-"))))))
+
+(defun check-explicit-timezone (ctx policy string)
+  (let ((has (datetime-has-timezone-p string)))
+    (cond
+      ((string-equal policy "required")
+       (unless has (vfail ctx "explicitTimezone required" string)))
+      ((string-equal policy "prohibited")
+       (when has (vfail ctx "explicitTimezone prohibited" string))))))
 
 (defun silent-valid-p (ctx type value)
   (let ((saved (vctx-issues ctx)))
@@ -218,14 +223,18 @@
     ((null type)
      t)
     ((stringp type)
-     (if (xsd-builtin-p type)
-         (unless (type-matches type value)
-           (vfail ctx (format nil "type ~A" type) value))
-         (let ((node (lookup-named (vctx-validator ctx) type)))
-           (unless node
-             (vfail ctx (format nil "unresolved type ~S" type))
-             (return-from check-type-ref nil))
-           (check-node ctx node value))))
+     (cond
+       ((xsd-error-type-p type)
+        (vfail ctx "xs:error" value))
+       ((xsd-builtin-p type)
+        (unless (type-matches type value)
+          (vfail ctx (format nil "type ~A" type) value)))
+       (t
+        (let ((node (lookup-named (vctx-validator ctx) type)))
+          (unless node
+            (vfail ctx (format nil "unresolved type ~S" type))
+            (return-from check-type-ref nil))
+          (check-node ctx node value)))))
     ((xml-elem-p type)
      (check-node ctx type value))
     (t t)))
@@ -246,11 +255,19 @@
           (type (xe-attr elem "type"))
           (inline (or (xe-kid elem "simpleType") (xe-kid elem "complexType"))))
       (labels ((one (v)
-                 (cond
-                   ((and (json-null-p v) nillable) t)
-                   (inline (check-node ctx inline v))
-                   (type (check-type-ref ctx type v))
-                   (t t))))
+                 (let ((alts (alternatives-of elem)))
+                   (cond
+                     ((and (json-null-p v) nillable) t)
+                     (alts
+                      (let ((alt (find-if (lambda (a)
+                                            (xpath-true-p (xe-attr a "test") v))
+                                          alts)))
+                        (if alt
+                            (check-type-ref ctx (xe-attr alt "type") v)
+                            (vfail ctx "no type alternative" v))))
+                     (inline (check-node ctx inline v))
+                     (type (check-type-ref ctx type v))
+                     (t t)))))
         (cond
           ((or (eq max :unbounded) (and (numberp max) (> max 1)))
            (let ((seq (cond
@@ -274,34 +291,62 @@
     (maphash (lambda (k v) (declare (ignore v)) (push k acc)) table)
     acc))
 
+(defun effective-open-content (node)
+  (or (xe-kid node "openContent")
+      (and (vctx-validator *vctx*)
+           (validator-default-open (vctx-validator *vctx*)))))
+
+(defvar *vctx* nil)
+
+(defun open-wildcard-p (node)
+  (let ((oc (effective-open-content node)))
+    (cond
+      ((and oc (string-equal (xe-attr oc "mode") "none")) nil)
+      (oc t)
+      (t
+       (let ((seq (content-group node)))
+         (and seq (xe-kid seq "any")))))))
+
 (defun check-complex (ctx node value)
-  (let ((disc (discriminator-of node)))
+  (let ((*vctx* ctx)
+        (disc (discriminator-of node))
+        (alts (alternatives-of node)))
+    (when (and alts (object-p value))
+      (let ((alt (find-if (lambda (a) (xpath-true-p (xe-attr a "test") value)) alts)))
+        (if alt
+            (return-from check-complex
+              (check-type-ref ctx (xe-attr alt "type") value))
+            (return-from check-complex
+              (vfail ctx "no type alternative" value)))))
     (when (and disc (object-p value))
-      (return-from check-complex (check-tagged ctx node disc value))))
-  (unless (object-p value)
-    (vfail ctx "expected object" value)
-    (return-from check-complex nil))
-  (let* ((seq (or (xe-kid node "sequence") (xe-kid node "choice")))
-         (wildcard (and seq (xe-kid seq "any")))
-         (seen (make-hash-table :test #'equal)))
-    (when seq
-      (dolist (el (xe-kids seq "element"))
-        (let ((name (xe-attr el "name")))
-          (setf (gethash name seen) t)
-          (multiple-value-bind (v present) (gethash name value)
-            (multiple-value-bind (min max) (parse-occurs el)
-              (declare (ignore max))
-              (cond
-                ((not present)
-                 (when (>= min 1)
-                   (with-path ctx name (lambda () (vfail ctx "required")))))
-                (t
-                 (with-path ctx name (lambda () (check-element ctx el v))))))))))
-    (unless wildcard
-      (maphash (lambda (k v)
-                 (unless (gethash k seen)
-                   (with-path ctx k (lambda () (vfail ctx "unexpected element" v)))))
-               value))))
+      (return-from check-complex (check-tagged ctx node disc value)))
+    (unless (object-p value)
+      (vfail ctx "expected object" value)
+      (return-from check-complex nil))
+    (let* ((seq (content-group node))
+           (wildcard (open-wildcard-p node))
+           (seen (make-hash-table :test #'equal)))
+      (when seq
+        (dolist (el (xe-kids seq "element"))
+          (let ((name (xe-attr el "name")))
+            (setf (gethash name seen) t)
+            (multiple-value-bind (v present) (gethash name value)
+              (multiple-value-bind (min max) (parse-occurs el)
+                (declare (ignore max))
+                (cond
+                  ((not present)
+                   (when (>= min 1)
+                     (with-path ctx name (lambda () (vfail ctx "required")))))
+                  (t
+                   (with-path ctx name (lambda () (check-element ctx el v))))))))))
+      (unless wildcard
+        (maphash (lambda (k v)
+                   (unless (gethash k seen)
+                     (with-path ctx k (lambda () (vfail ctx "unexpected element" v)))))
+                 value))
+      (dolist (a (xe-kids node "assert"))
+        (unless (xpath-true-p (xe-attr a "test") value)
+          (vfail ctx (format nil "assert ~S" (xe-attr a "test")) value))))))
 
 (defun check-tagged (ctx node disc value)
   (declare (ignore node))
@@ -327,7 +372,8 @@
          (root (xsd-schema-root doc))
          (types (make-hash-table :test #'equal))
          (elements (make-hash-table :test #'equal))
-         (root-el nil))
+         (root-el nil)
+         (default-open nil))
     (unless (xe-named-p root "schema")
       (error 'xsd-schema-error
              :message (format nil "expected xs:schema, got ~S" (xe-name root))))
@@ -335,6 +381,8 @@
       (when (xml-elem-p c)
         (let ((n (xe-attr c "name")))
           (cond
+            ((xe-named-p c "defaultOpenContent")
+             (setf default-open c))
             ((and (xe-named-p c "complexType") n)
              (setf (gethash n types) c))
             ((and (xe-named-p c "simpleType") n)
@@ -346,7 +394,8 @@
                                :version (or version (xsd-schema-version doc))
                                :types types
                                :elements elements
-                               :root-element root-el)))
+                               :root-element root-el
+                               :default-open default-open)))
 
 (defun root-type-node (validator)
   (let ((el (validator-root-element validator)))
@@ -371,10 +420,15 @@
                              (xe-attr (validator-root-element validator) "name"))))
           (when (and expected (not (string-equal expected root-name)))
             (vfail ctx (format nil "root element ~S, expected ~S" root-name expected)))))
-      (let ((node (root-type-node validator)))
-        (unless node
-          (error 'xsd-schema-error :message "no root type to validate against"))
-        (check-node ctx node payload)))
+      (let ((root-el (validator-root-element validator)))
+        (cond
+          ((and root-el (alternatives-of root-el))
+           (check-element ctx root-el payload))
+          (t
+           (let ((node (root-type-node validator)))
+             (unless node
+               (error 'xsd-schema-error :message "no root type to validate against"))
+             (check-node ctx node payload))))))
     (when (vctx-issues ctx)
       (error 'xsd-schema-validation-error
              :issues (nreverse (vctx-issues ctx))))

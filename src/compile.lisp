@@ -7,7 +7,8 @@
   (root-name nil)
   (types (make-hash-table :test #'equal))
   (elements (make-hash-table :test #'equal))
-  (filled (make-hash-table :test #'eq)))
+  (filled (make-hash-table :test #'eq))
+  (open-content nil))
 
 (defun %sanitize (string)
   (let ((s (substitute #\- #\_ (substitute #\- #\Space (string string)))))
@@ -38,6 +39,8 @@
     (when (xml-elem-p c)
       (let ((n (xe-attr c "name")))
         (cond
+          ((xe-named-p c "defaultOpenContent")
+           (setf (compile-ctx-open-content ctx) c))
           ((xe-named-p c "complexType")
            (when n (setf (gethash n (compile-ctx-types ctx)) c)))
           ((xe-named-p c "simpleType")
@@ -69,14 +72,33 @@
 (defun nillable-p (elem)
   (string-equal (xe-attr elem "nillable") "true"))
 
-(defun extra-from (elem)
-  (if (or (xe-kid elem "any")
-          (and (xe-kid elem "sequence")
-               (xe-kid (xe-kid elem "sequence") "any"))
-          (and (xe-kid elem "choice")
-               (xe-kid (xe-kid elem "choice") "any")))
-      :allow
-      :forbid))
+(defun open-content-allows-p (elem)
+  (let ((oc (xe-kid elem "openContent")))
+    (and oc (not (string-equal (xe-attr oc "mode") "none")))))
+
+(defun extra-from (elem &optional ctx)
+  (cond
+    ((open-content-allows-p elem) :allow)
+    ((or (xe-kid elem "any")
+         (and (xe-kid elem "sequence")
+              (xe-kid (xe-kid elem "sequence") "any"))
+         (and (xe-kid elem "choice")
+              (xe-kid (xe-kid elem "choice") "any"))
+         (and (xe-kid elem "all")
+              (xe-kid (xe-kid elem "all") "any")))
+     :allow)
+    ((and ctx (compile-ctx-open-content ctx)
+          (not (string-equal (xe-attr (compile-ctx-open-content ctx) "mode") "none")))
+     :allow)
+    (t :forbid)))
+
+(defun alternatives-of (elem)
+  (and (xml-elem-p elem) (xe-kids elem "alternative")))
+
+(defun content-group (elem)
+  (or (xe-kid elem "sequence")
+      (xe-kid elem "choice")
+      (xe-kid elem "all")))
 
 (defun restriction-of (elem)
   (or (xe-kid elem "restriction")
@@ -243,6 +265,57 @@
          (disc (and app (xe-kid app "discriminator"))))
     disc))
 
+(defun fill-from-alternatives (ctx name elem)
+  (let ((sym (%name-symbol name ctx)))
+    (when (gethash sym (compile-ctx-filled ctx))
+      (return-from fill-from-alternatives (find-class sym)))
+    (setf (gethash sym (compile-ctx-filled ctx)) t)
+    (let ((prop nil)
+          (pairs '()))
+      (dolist (alt (alternatives-of elem))
+        (let ((type (xe-attr alt "type")))
+          (when (and type (not (xsd-error-type-p type)))
+            (multiple-value-bind (p v) (parse-alternative-test (xe-attr alt "test"))
+              (when p
+                (setf prop (or prop p))
+                (push (cons v type) pairs))))))
+      (unless (and prop pairs)
+        (return-from fill-from-alternatives
+          (%fill-class ctx name (or (lookup-type ctx (xe-attr elem "type"))
+                                    (xe-kid elem "complexType")
+                                    elem))))
+      (let* ((tag-sym (%name-symbol prop ctx))
+             (slots `((:name ,tag-sym
+                       :type t
+                       :initargs (,(intern (symbol-name tag-sym) :keyword))
+                       :readers (,tag-sym)
+                       :writers ((setf ,tag-sym))
+                       :key ,(stringify-key prop)
+                       :required t)))
+             (base (ensure-class sym
+                                 :metaclass (find-class 'schema-class)
+                                 :direct-superclasses (list (find-class 'schema-object))
+                                 :direct-slots slots
+                                 :extra (extra-from elem ctx)
+                                 :tag tag-sym)))
+        (dolist (pair (nreverse pairs))
+          (let* ((tag-value (car pair))
+                 (type (cdr pair))
+                 (vnode (lookup-type ctx type)))
+            (when vnode
+              (let ((vsym (%name-symbol type ctx)))
+                (unless (gethash vsym (compile-ctx-filled ctx))
+                  (setf (gethash vsym (compile-ctx-filled ctx)) t)
+                  (ensure-class vsym
+                                :metaclass (find-class 'schema-class)
+                                :direct-superclasses (list base)
+                                :direct-slots (%specialize-tag-slots ctx vnode prop tag-value)
+                                :extra (extra-from vnode ctx)))))))
+        (find-class sym)))))
+
+(defun xsd-error-type-p (type)
+  (and type (string-equal (local-name type) "error")))
+
 (defun %specialize-tag-slots (ctx vnode prop tag-value)
   (let* ((seq (or (xe-kid vnode "sequence") (xe-kid vnode "choice")))
          (slots '()))
@@ -304,13 +377,15 @@
         (find-class sym)))))
 
 (defun %fill-class (ctx name node &key supers)
+  (when (alternatives-of node)
+    (return-from %fill-class (fill-from-alternatives ctx name node)))
   (when (discriminator-of node)
     (return-from %fill-class (fill-tagged ctx name node)))
   (let ((sym (%name-symbol name ctx)))
     (when (gethash sym (compile-ctx-filled ctx))
       (return-from %fill-class (find-class sym)))
     (setf (gethash sym (compile-ctx-filled ctx)) t)
-    (let* ((seq (or (xe-kid node "sequence") (xe-kid node "choice")))
+    (let* ((seq (content-group node))
            (slots '()))
       (when seq
         (dolist (el (xe-kids seq "element"))
@@ -319,7 +394,7 @@
                     :metaclass (find-class 'schema-class)
                     :direct-superclasses (or supers (list (find-class 'schema-object)))
                     :direct-slots (nreverse slots)
-                    :extra (extra-from node))
+                    :extra (extra-from node ctx))
       (find-class sym))))
 
 (defun compile-schema (source &key name (package *generated-package*) version)
@@ -343,7 +418,8 @@
                  (declare (ignore v))
                  (%ensure-shell ctx k))
                (compile-ctx-types ctx))
-      (let ((node (or (and root-el
+      (let ((node (or (and root-el (alternatives-of root-el) root-el)
+                      (and root-el
                            (or (lookup-type ctx (xe-attr root-el "type"))
                                (xe-kid root-el "complexType")
                                (xe-kid root-el "simpleType")))

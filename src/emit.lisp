@@ -1,5 +1,11 @@
 (in-package #:schema-protocol-xsd)
 
+(defvar *xsd-emit-version* :1.0)
+(defvar *emit-alternatives* nil)
+
+(defun xsd-1.1-p (&optional (version *xsd-emit-version*))
+  (member version '(:1.1 :xsd-1.1)))
+
 (defun xs (name &optional attrs &rest children)
   (apply #'xe (concatenate 'string "xs:" name) attrs children))
 
@@ -65,7 +71,9 @@
       (when (eq (slot-format slot) :uuid)
         (push (xs "pattern"
                   `(("value" . "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")))
-              kids)))
+              kids))
+      (when (and (xsd-1.1-p) (member (slot-format slot) '(:date-time :datetime)))
+        (push (xs "explicitTimezone" '(("value" . "optional"))) kids)))
     (nreverse kids)))
 
 (defun enum-restriction (values base)
@@ -172,11 +180,14 @@
 
 (defun extra-any (class)
   (when (eq (schema-extra-policy class) :allow)
-    (xs "any" '(("minOccurs" . "0")
-                ("maxOccurs" . "unbounded")
-                ("processContents" . "lax")))))
+    (if (xsd-1.1-p)
+        (xs "openContent" '(("mode" . "interleave"))
+            (xs "any" '(("processContents" . "lax"))))
+        (xs "any" '(("minOccurs" . "0")
+                    ("maxOccurs" . "unbounded")
+                    ("processContents" . "lax"))))))
 
-(defun emit-tagged (class defs)
+(defun emit-tagged-1.0 (class defs)
   (let* ((tag (schema-tag class))
          (slot (schema-slot class tag))
          (prop (slot-wire-key slot class))
@@ -196,6 +207,32 @@
                        (nreverse mappings))))
         (apply #'xs "choice" nil (nreverse choices)))))
 
+(defun emit-tagged-1.1 (class defs)
+  (let* ((tag (schema-tag class))
+         (slot (schema-slot class tag))
+         (prop (slot-wire-key slot class))
+         (alts '()))
+    (dolist (v (reverse (schema-variants class)))
+      (let* ((vname (class-name v))
+             (key (string-downcase (symbol-name vname))))
+        (ensure-named-type vname defs)
+        (dolist (tv (variant-tag-values v tag))
+          (push (xs "alternative"
+                    `(("test" . ,(format nil "~A = '~A'" prop (enum-wire tv)))
+                      ("type" . ,key)))
+                alts))))
+    (setf *emit-alternatives*
+          (append (nreverse alts)
+                  (list (xs "alternative" '(("type" . "xs:error"))))))
+    (xs "complexType" `(("name" . ,(string-downcase (symbol-name (class-name class)))))
+        (xs "sequence" nil
+            (xs "element" `(("name" . ,prop) ("type" . "xs:string")))))))
+
+(defun emit-tagged (class defs)
+  (if (xsd-1.1-p)
+      (emit-tagged-1.1 class defs)
+      (emit-tagged-1.0 class defs)))
+
 (defun object-complex-type (class defs)
   (finalize-schema class)
   (when (and (schema-tag class) (schema-variants class))
@@ -212,14 +249,29 @@
                       (xs "appinfo" nil
                           (xe "readOnly" nil "true"))))
               particles)))
-    (let ((any (extra-any class)))
-      (when any (push any particles)))
-    (xs "complexType" `(("name" . ,(string-downcase (symbol-name (class-name class)))))
-        (apply #'xs "sequence" nil (nreverse particles)))))
+    (let ((extra (extra-any class))
+          (kids (nreverse particles)))
+      (apply #'xs "complexType"
+             `(("name" . ,(string-downcase (symbol-name (class-name class)))))
+             (if (and extra (xsd-1.1-p))
+                 (list* extra (apply #'xs "sequence" nil kids) nil)
+                 (list (apply #'xs "sequence" nil
+                              (append kids (and extra (not (xsd-1.1-p)) (list extra))))))))))
+
+(defun schema-attrs (version)
+  (if (xsd-1.1-p version)
+      `(("xmlns:xs" . ,+xsd-ns+)
+        ("xmlns:vc" . ,+xsd-vc-ns+)
+        ("vc:minVersion" . "1.1")
+        ("version" . "1.1")
+        ("elementFormDefault" . "qualified"))
+      `(("xmlns:xs" . ,+xsd-ns+)
+        ("elementFormDefault" . "qualified"))))
 
 (defun emit-class (schema &key (version :1.0))
-  (declare (ignore version))
-  (let* ((class (schema-of schema))
+  (let* ((*xsd-emit-version* version)
+         (*emit-alternatives* nil)
+         (class (schema-of schema))
          (defs (make-hash-table :test #'equal))
          (root-name (string-downcase (symbol-name (class-name class))))
          (root-type (object-complex-type class defs)))
@@ -231,9 +283,12 @@
                    (push v types)))
                defs)
       (apply #'xs "schema"
-             `(("xmlns:xs" . ,+xsd-ns+)
-               ("elementFormDefault" . "qualified"))
-             (xs "element" `(("name" . ,root-name) ("type" . ,root-name)))
+             (schema-attrs version)
+             (apply #'xs "element"
+                    (if *emit-alternatives*
+                        `(("name" . ,root-name))
+                        `(("name" . ,root-name) ("type" . ,root-name)))
+                    *emit-alternatives*)
              (nreverse types)))))
 
 (defun emit (schema &key (version :1.0) (as :xml))
