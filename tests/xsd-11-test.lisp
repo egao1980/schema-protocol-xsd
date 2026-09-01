@@ -40,7 +40,7 @@
       (ok (schema-tag class))
       (let ((obj (schema-protocol:parse class (%ht "kind" "circ" "r" 1.5))))
         (ok (equal "%x11-circ"
-                   (string-downcase (symbol-name (class-name (class-of obj)))))))))))
+                   (string-downcase (symbol-name (class-name (class-of obj))))))))))
 
 (deftest validate-assert
   (let ((schema "<xs:schema xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" version=\"1.1\">
