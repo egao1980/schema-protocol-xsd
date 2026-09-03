@@ -4,7 +4,7 @@ XSD 1.0 / **1.1** **parse / generate / validate** for [`schema-protocol`](https:
 
 | System | Role | OCI |
 |--------|------|-----|
-| `schema-protocol-xsd` (`stack-schema-xsd`) | XSD emit + load + compile → CLOS schema-class | **0.1.1** |
+| `schema-protocol-xsd` (`stack-schema-xsd`) | XSD emit + load + compile → CLOS schema-class | **0.1.2** |
 
 `schema-protocol` owns models / validate / dump. This package owns **XSD documents**.
 
@@ -64,7 +64,7 @@ Wave-1 is a **closed subset** that round-trips `defschema`:
 
 **Not in wave-1:** attributes, `xs:extension`, substitution groups, keys/keyref, remote schemas, full XPath, `xs:override`.
 
-XML I/O is a small sexp reader/writer in this package (declaration, elements, attrs, comments, predefined entities, CDATA). Not a general XML stack.
+XML bytes go through [`xml-protocol`](https://github.com/egao1980/xml-protocol) (`xml-element` Infoset). `decode-validating` = well-formed decode then `validate-instance`.
 
 ## License
 

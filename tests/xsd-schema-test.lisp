@@ -25,7 +25,7 @@
          (root (xsd-schema-root doc)))
     (ok (search "xs:schema" xml))
     (ok (search "http://www.w3.org/2001/XMLSchema" xml))
-    (ok (equal "schema" (schema-protocol-xsd::xe-local root)))
+    (ok (equal "schema" (xml-local-name root)))
     (ok (xsd-schema-document-p doc))
     (ok (search "minLength" xml))
     (ok (search "minOccurs=\"0\"" xml))

@@ -1,10 +1,10 @@
 (defsystem "schema-protocol-xsd"
-  :version "0.1.1"
+  :version "0.1.2"
   :description "XSD 1.0/1.1 parse/generate/validate for schema-protocol"
   :author "egao1980"
   :license "MIT"
-  :depends-on ("schema-protocol" "closer-mop" "cl-ppcre")
-  :properties (:cl-repo (:ci (:sources (("schema-protocol" :oci)))))
+  :depends-on ("schema-protocol" "closer-mop" "cl-ppcre" "xml-protocol" "xml-backend-native")
+  :properties (:cl-repo (:ci (:sources (("schema-protocol" :oci) ("xml-protocol" :oci) ("xml-backend-native" :oci)))))
   :serial t
   :pathname "src"
   :components ((:file "package")

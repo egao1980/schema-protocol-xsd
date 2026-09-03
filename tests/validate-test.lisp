@@ -75,6 +75,17 @@
     (ng (valid-instance-p schema "<person></person>"))
     (ng (valid-instance-p schema "<nope><msg>ok</msg></nope>"))))
 
+(deftest decode-validating-dom
+  (let* ((schema (%person-xsd))
+         (doc (decode-validating "<person><msg>ok</msg></person>" schema)))
+    (ok (xml-document-p doc))
+    (ok (string= "person" (xml-local-name (document-root-element doc))))
+    (ok (string= "ok" (xml-element-text (xml-child (document-root-element doc) "msg"))))
+    (ok (signals (decode-validating "<person></person>" schema)
+                 'xsd-schema-validation-error))
+    (ok (signals (decode-validating "<a></b>" schema)
+                 'xml-parse-error))))
+
 (deftest validate-named-ref
   (let ((schema "<xs:schema xmlns:xs=\"http://www.w3.org/2001/XMLSchema\">
                    <xs:element name=\"has-home\" type=\"has-home\"/>
