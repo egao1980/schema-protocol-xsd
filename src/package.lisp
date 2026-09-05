@@ -3,9 +3,10 @@
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   ;; 0.1.0 OCI pin has no XSD-SCHEMA yet — intern so :import-from works.
-  (let* ((pkg (find-package '#:schema-protocol))
-         (sym (intern "XSD-SCHEMA" pkg)))
-    (export sym pkg)))
+  (let ((pkg (find-package '#:schema-protocol)))
+    (dolist (name '("XSD-SCHEMA" "SCHEMA-FORMAT-BACKEND" "REGISTER-SCHEMA-FORMAT"
+                    "BACKEND-EMIT-SCHEMA" "BACKEND-PARSE-SCHEMA"))
+      (export (intern name pkg) pkg))))
 
 (defpackage #:schema-protocol-xsd
   (:use #:cl #:xml-protocol)
@@ -48,6 +49,10 @@
                 #:slot-description
                 #:style-key
                 #:xsd-schema
+                #:schema-format-backend
+                #:register-schema-format
+                #:backend-emit-schema
+                #:backend-parse-schema
                 #:schema-validation-error
                 #:schema-validation-error-issues
                 #:make-schema-issue

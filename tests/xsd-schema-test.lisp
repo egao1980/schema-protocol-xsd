@@ -151,3 +151,23 @@
     (ok (equal "circ" (string-downcase (symbol-name (class-name (class-of obj))))))
     (ok (signals (schema-protocol:parse class (%ht "kind" "nope"))
                  'schema-validation-error))))
+
+(deftest format-registry
+  (defschema %reg-xsd ()
+    (name string))
+  (let ((via-gf (xsd-schema '%reg-xsd))
+        (via-reg (emit-schema '%reg-xsd :format :xsd)))
+    (ok (stringp via-gf))
+    (ok (stringp via-reg))
+    (ok (search "xs:schema" via-reg)))
+  (let* ((xml "<xs:schema xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" elementFormDefault=\"qualified\">
+                 <xs:element name=\"person\" type=\"person\"/>
+                 <xs:complexType name=\"person\">
+                   <xs:sequence>
+                     <xs:element name=\"name\" type=\"xs:string\"/>
+                   </xs:sequence>
+                 </xs:complexType>
+               </xs:schema>")
+         (class (parse-schema xml :format :xsd :name 'reg-compiled-xsd)))
+    (ok (schema-class-p class))
+    (ok (equal "Ada" (%slot (schema-protocol:parse class (%ht "name" "Ada")) "NAME")))))

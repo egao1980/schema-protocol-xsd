@@ -4,7 +4,7 @@ XSD 1.0 / **1.1** **parse / generate / validate** for [`schema-protocol`](https:
 
 | System | Role | OCI |
 |--------|------|-----|
-| `schema-protocol-xsd` (`stack-schema-xsd`) | XSD emit + load + compile → CLOS schema-class | **0.1.2** |
+| `schema-protocol-xsd` (`stack-schema-xsd`) | XSD emit + load + compile → CLOS schema-class | **0.1.3** |
 
 `schema-protocol` owns models / validate / dump. This package owns **XSD documents**.
 
@@ -13,6 +13,7 @@ XSD 1.0 / **1.1** **parse / generate / validate** for [`schema-protocol`](https:
 
 (stack-schema-xsd:emit 'user)                 ; XSD 1.0
 (stack-schema-xsd:emit 'user :version :1.1)   ; alternatives + openContent + vc
+(stack-schema:emit-schema 'user :format :xsd :version :1.1)
 (stack-schema:xsd-schema 'user)               ; same, after this system is loaded
 
 (let ((class (stack-schema-xsd:compile-schema
