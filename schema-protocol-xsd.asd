@@ -4,7 +4,7 @@
   :author "egao1980"
   :license "MIT"
   :depends-on ("schema-protocol" "closer-mop" "cl-ppcre" "xml-protocol" "xml-backend-native")
-:serial t
+  :serial t
   :pathname "src"
   :components ((:file "package")
                (:file "conditions")
