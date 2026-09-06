@@ -1,5 +1,5 @@
 (defsystem "schema-protocol-xsd"
-  :version "0.1.3"
+  :version "0.1.4"
   :description "XSD 1.0/1.1 parse/generate/validate for schema-protocol"
   :author "egao1980"
   :license "MIT"
@@ -24,7 +24,8 @@
   :components ((:file "package")
                (:file "xsd-schema-test")
                (:file "validate-test")
-               (:file "xsd-11-test"))
+               (:file "xsd-11-test")
+               (:file "attribute-extension-test"))
   :perform (test-op (o c)
              (unless (symbol-call :rove :run c)
                (error "tests failed for ~A" (component-name c)))))

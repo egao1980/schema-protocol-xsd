@@ -13,12 +13,15 @@
   (:nicknames #:stack-schema-xsd)
   (:import-from #:closer-mop
                 #:ensure-class
+                #:class-direct-slots
+                #:class-direct-superclasses
                 #:slot-definition-name
                 #:slot-definition-type)
   (:import-from #:schema-protocol
                 #:schema-of
                 #:schema-slots
                 #:schema-class
+                #:schema-class-p
                 #:schema-object
                 #:schema-class-extra
                 #:schema-extra-policy

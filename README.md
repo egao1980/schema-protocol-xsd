@@ -4,7 +4,7 @@ XSD 1.0 / **1.1** **parse / generate / validate** for [`schema-protocol`](https:
 
 | System | Role | OCI |
 |--------|------|-----|
-| `schema-protocol-xsd` (`stack-schema-xsd`) | XSD emit + load + compile → CLOS schema-class | **0.1.3** |
+| `schema-protocol-xsd` (`stack-schema-xsd`) | XSD emit + load + compile → CLOS schema-class | **0.1.4** |
 
 `schema-protocol` owns models / validate / dump. This package owns **XSD documents**.
 
@@ -40,12 +40,14 @@ No Common Lisp library validates **XSD documents**. What exists:
 | **cxml-rng** | — | Relax NG. “XSD type library” = datatypes inside RNG, not `xs:schema` |
 | **cl-libxml2** | — | libxml2 FFI + native overlay (Windows-primary stack stays Lisp) |
 | **Trang / Xerces** | checklist (named types, facets, nillable) | JVM / codegen |
-| **W3C XSD 1.0** | `xs:element` / `complexType` / `simpleType` / `sequence` / `choice` / facets | identity constraints, `xs:import` |
+| **W3C XSD 1.0** | `xs:element` / `attribute` / `complexType` / `simpleType` / `sequence` / `choice` / `complexContent`/`extension` / facets | `xs:import`, XPath-step identity constraints |
 | **W3C XSD 1.1** | `xs:assert` / `xs:assertion`, `xs:alternative`, `xs:openContent`, `explicitTimezone`, `xs:all` | full XPath 2.0, `xs:override`, inheritable attrs |
 
 Wave-1 is a **closed subset** that round-trips `defschema`:
 
 - objects → `xs:complexType` + `xs:sequence` of elements
+- slots with `@`-prefixed or explicit `:key` starting `@` → `xs:attribute` (`use="required"` when required)
+- `defschema` supers (plain, not tagged) → `xs:complexContent` / `xs:extension`; compile maps `extension/@base` to a CLOS super
 - nested schemas → named types (no `xs:import` / `xs:include`)
 - optional → `minOccurs="0"`; `:null` unions → `nillable`
 - vectors → `maxOccurs="unbounded"`
@@ -53,6 +55,7 @@ Wave-1 is a **closed subset** that round-trips `defschema`:
 - tagged unions → 1.0: `xs:choice` + `appinfo` discriminator; **1.1:** `xs:alternative` + `xs:error`
 - `:extra :allow` → 1.0: `xs:any`; **1.1:** `xs:openContent mode="interleave"`
 - instance validate accepts hash-tables / plists **or** XML strings
+- `xs:unique` / `xs:key` / `xs:keyref` on the root element when `selector`/`field` are a single child name, `@attr`, or `.` (`validate-instance` only; not emitted from `defschema`)
 
 **XSD 1.1** (`:version :1.1` on emit; parse detects `@version` / `vc:minVersion`):
 
@@ -63,7 +66,7 @@ Wave-1 is a **closed subset** that round-trips `defschema`:
 - `xs:all` (hash-table order already free)
 - `xs:error` always fails
 
-**Not in wave-1:** attributes, `xs:extension`, substitution groups, keys/keyref, remote schemas, full XPath, `xs:override`.
+**Not in wave-1:** substitution groups, `xs:import` / `xs:include` / `xs:override`, remote schemas, full XPath 2.0 (steps, predicates, axes), `simpleContent`, attribute groups / `attribute/@ref`, identity-constraint emit from `defschema`, keyref across documents.
 
 XML bytes go through [`xml-protocol`](https://github.com/egao1980/xml-protocol) (`xml-element` Infoset). `decode-validating` = well-formed decode then `validate-instance`.
 

@@ -240,7 +240,8 @@
         (:not (not (xpath-truthy (xpath-eval (second ast) env))))
         (:value (xpath-atom (first env)))
         (:path (xpath-lookup env (second ast)))
-        (:attr (xpath-lookup env (second ast)))
+        (:attr (or (xpath-lookup env (second ast))
+                   (xpath-lookup env (attribute-key (second ast)))))
         (:lit (second ast))
         (:count
          (let ((v (xpath-eval (second ast) env)))
@@ -281,3 +282,17 @@
                          (consp right) (eq (first right) :lit))
                 (values (second left) (second right))))))
       (xpath-error () nil))))
+
+(defun simple-xpath-step (string)
+  "Child name, @attr, or '.' → AST. NIL if the path is outside the cheap subset."
+  (when (and string (plusp (length string)))
+    (let ((s (string-trim '(#\Space #\Tab #\Newline #\Return) string)))
+      (cond
+        ((or (string= s ".") (string= s "./."))
+         '(:self))
+        ((zerop (length s)) nil)
+        (t
+         (handler-case
+             (let ((ast (xpath-parse s)))
+               (and (consp ast) (member (first ast) '(:path :attr)) ast))
+           (error () nil)))))))

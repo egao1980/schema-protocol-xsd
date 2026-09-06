@@ -178,6 +178,52 @@
                       :max 1
                       :nillable nillable))))
 
+(defun emit-key-style (class)
+  "schema-key-style-policy when present (schema-protocol ≥ 0.2.1); else class slot."
+  (let ((sym (find-symbol "SCHEMA-KEY-STYLE-POLICY" :schema-protocol)))
+    (if (and sym (fboundp sym))
+        (funcall sym class)
+        (schema-class-key-style class))))
+
+(defun slot-is-attribute-p (slot class)
+  (attribute-key-p (slot-wire-key slot class)))
+
+(defun make-attribute (name spec slot defs &key required)
+  (multiple-value-bind (type inline) (type-payload spec slot defs)
+    (apply #'xs "attribute"
+           (append `(("name" . ,(bare-attribute-name name)))
+                   (when type `(("type" . ,type)))
+                   (when required '(("use" . "required"))))
+           (when inline (list inline)))))
+
+(defun slot-attribute (slot class defs)
+  (let* ((spec (slot-definition-type slot))
+         (nillable (or-null-p spec))
+         (payload (if nillable (or-payload spec) spec)))
+    (make-attribute (slot-wire-key slot class) payload slot defs
+                    :required (slot-is-required-p slot))))
+
+(defun schema-extension-base (class)
+  "First plain schema-class superclass (not SCHEMA-OBJECT, not a tagged union)."
+  (dolist (super (class-direct-superclasses class))
+    (when (and (schema-class-p super)
+               (not (eq (class-name super) 'schema-object))
+               (not (schema-tag super)))
+      (return super))))
+
+(defun complex-type-body (elements attributes extra &key force-sequence)
+  (let* ((need-seq (or elements
+                       (and extra (not (xsd-1.1-p)))
+                       force-sequence))
+         (seq (when need-seq
+                (apply #'xs "sequence" nil
+                       (append elements
+                               (and extra (not (xsd-1.1-p)) (list extra))))))
+         (oc (and extra (xsd-1.1-p) extra)))
+    (append (when oc (list oc))
+            (when seq (list seq))
+            attributes)))
+
 (defun extra-any (class)
   (when (eq (schema-extra-policy class) :allow)
     (if (xsd-1.1-p)
@@ -237,26 +283,35 @@
   (finalize-schema class)
   (when (and (schema-tag class) (schema-variants class))
     (return-from object-complex-type (emit-tagged class defs)))
-  (let ((particles '()))
-    (dolist (slot (schema-slots class))
+  (let* ((base (schema-extension-base class))
+         (elements '())
+         (attributes '()))
+    (when base
+      (ensure-named-type (class-name base) defs))
+    (dolist (slot (if base (class-direct-slots class) (schema-slots class)))
       (when (and (slot-wire-p slot) (slot-dump-p slot))
-        (push (slot-particle slot class defs) particles)))
+        (if (slot-is-attribute-p slot class)
+            (push (slot-attribute slot class defs) attributes)
+            (push (slot-particle slot class defs) elements))))
     (dolist (cname (schema-class-computes class))
-      (let ((key (style-key cname (schema-class-key-style class))))
+      (let ((key (style-key cname (emit-key-style class))))
         (push (xs "element"
                   `(("name" . ,key) ("type" . "xs:anyType") ("minOccurs" . "0"))
                   (xs "annotation" nil
                       (xs "appinfo" nil
                           (make-xml-element "readOnly" nil "true"))))
-              particles)))
-    (let ((extra (extra-any class))
-          (kids (nreverse particles)))
-      (apply #'xs "complexType"
-             `(("name" . ,(string-downcase (symbol-name (class-name class)))))
-             (if (and extra (xsd-1.1-p))
-                 (list* extra (apply #'xs "sequence" nil kids) nil)
-                 (list (apply #'xs "sequence" nil
-                              (append kids (and extra (not (xsd-1.1-p)) (list extra))))))))))
+              elements)))
+    (let* ((extra (extra-any class))
+           (body (complex-type-body (nreverse elements) (nreverse attributes) extra
+                                    :force-sequence (and (not base) (null attributes))))
+           (name (string-downcase (symbol-name (class-name class)))))
+      (if base
+          (xs "complexType" `(("name" . ,name))
+              (xs "complexContent" nil
+                  (apply #'xs "extension"
+                         `(("base" . ,(string-downcase (symbol-name (class-name base)))))
+                         body)))
+          (apply #'xs "complexType" `(("name" . ,name)) body)))))
 
 (defun schema-attrs (version)
   (if (xsd-1.1-p version)
