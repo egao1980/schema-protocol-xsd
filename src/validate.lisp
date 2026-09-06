@@ -9,7 +9,15 @@
   types
   elements
   root-element
-  default-open)
+  default-open
+  constraints)
+
+(defstruct (xsd-identity-constraint (:conc-name constraint-))
+  kind
+  name
+  refer
+  selector
+  fields)
 
 (defstruct vctx
   validator
@@ -302,14 +310,73 @@
 
 (defvar *vctx* nil)
 
-(defun open-wildcard-p (node)
-  (let ((oc (effective-open-content node)))
+(defun local-wildcard-p (node)
+  (let ((oc (or (xml-child node "openContent")
+                (xml-child (content-node node) "openContent")
+                (and *vctx* (vctx-validator *vctx*)
+                     (validator-default-open (vctx-validator *vctx*))))))
     (cond
       ((and oc (string-equal (xml-attr oc "mode") "none")) nil)
       (oc t)
       (t
        (let ((seq (content-group node)))
          (and seq (xml-child seq "any")))))))
+
+(defun open-wildcard-p (node &optional visited)
+  (when (or (null node) (member node visited :test #'eq))
+    (return-from open-wildcard-p nil))
+  (or (local-wildcard-p node)
+      (let ((ext (complex-extension node)))
+        (when (and ext *vctx* (vctx-validator *vctx*))
+          (let ((base (xml-attr ext "base")))
+            (when (and base (not (xsd-builtin-p base)))
+              (open-wildcard-p (lookup-named (vctx-validator *vctx*) base)
+                               (cons node visited))))))))
+
+(defun collect-complex-particles (ctx node)
+  (let ((chain '())
+        (visited '()))
+    (labels ((walk (n)
+               (when (and n (not (member n visited :test #'eq)))
+                 (push n visited)
+                 (let ((ext (complex-extension n)))
+                   (when ext
+                     (let ((base (xml-attr ext "base")))
+                       (when (and base (not (xsd-builtin-p base)))
+                         (walk (lookup-named (vctx-validator ctx) base))))))
+                 (push n chain))))
+      (walk node)
+      (let ((els '())
+            (attrs '())
+            (asserts '()))
+        (dolist (n (nreverse chain))
+          (let ((seq (content-group n)))
+            (when seq
+              (dolist (el (xml-children-named seq "element"))
+                (push el els))))
+          (dolist (a (attributes-of n))
+            (push a attrs))
+          (dolist (a (xml-children-named n "assert"))
+            (push a asserts))
+          (let ((ext (complex-extension n)))
+            (when ext
+              (dolist (a (xml-children-named ext "assert"))
+                (push a asserts)))))
+        (values (nreverse els) (nreverse attrs) (nreverse asserts))))))
+
+(defun table-get-attribute (table name)
+  (multiple-value-bind (v present) (gethash (attribute-key name) table)
+    (if present
+        (values v t)
+        (gethash name table))))
+
+(defun check-attribute (ctx attr value)
+  (let ((type (xml-attr attr "type"))
+        (inline (xml-child attr "simpleType")))
+    (cond
+      (inline (check-node ctx inline value))
+      (type (check-type-ref ctx type value))
+      (t t))))
 
 (defun check-complex (ctx node value)
   (let ((*vctx* ctx)
@@ -327,11 +394,11 @@
     (unless (object-p value)
       (vfail ctx "expected object" value)
       (return-from check-complex nil))
-    (let* ((seq (content-group node))
-           (wildcard (open-wildcard-p node))
-           (seen (make-hash-table :test #'equal)))
-      (when seq
-        (dolist (el (xml-children-named seq "element"))
+    (multiple-value-bind (els attrs asserts)
+        (collect-complex-particles ctx node)
+      (let ((wildcard (open-wildcard-p node))
+            (seen (make-hash-table :test #'equal)))
+        (dolist (el els)
           (let ((name (xml-attr el "name")))
             (setf (gethash name seen) t)
             (multiple-value-bind (v present) (gethash name value)
@@ -342,15 +409,27 @@
                    (when (>= min 1)
                      (with-path ctx name (lambda () (vfail ctx "required")))))
                   (t
-                   (with-path ctx name (lambda () (check-element ctx el v))))))))))
-      (unless wildcard
-        (maphash (lambda (k v)
-                   (unless (gethash k seen)
-                     (with-path ctx k (lambda () (vfail ctx "unexpected element" v)))))
-                 value))
-      (dolist (a (xml-children-named node "assert"))
-        (unless (xpath-true-p (xml-attr a "test") value)
-          (vfail ctx (format nil "assert ~S" (xml-attr a "test")) value))))))
+                   (with-path ctx name (lambda () (check-element ctx el v)))))))))
+        (dolist (attr attrs)
+          (let ((name (xml-attr attr "name"))
+                (akey (attribute-key (xml-attr attr "name"))))
+            (setf (gethash name seen) t)
+            (setf (gethash akey seen) t)
+            (multiple-value-bind (v present) (table-get-attribute value name)
+              (cond
+                ((not present)
+                 (when (string-equal (xml-attr attr "use") "required")
+                   (with-path ctx akey (lambda () (vfail ctx "required")))))
+                (t
+                 (with-path ctx akey (lambda () (check-attribute ctx attr v))))))))
+        (unless wildcard
+          (maphash (lambda (k v)
+                     (unless (gethash k seen)
+                       (with-path ctx k (lambda () (vfail ctx "unexpected element" v)))))
+                   value))
+        (dolist (a asserts)
+          (unless (xpath-true-p (xml-attr a "test") value)
+            (vfail ctx (format nil "assert ~S" (xml-attr a "test")) value)))))))
 
 (defun check-tagged (ctx node disc value)
   (declare (ignore node))
@@ -367,6 +446,33 @@
         (with-path ctx prop (lambda () (vfail ctx "unknown tag" raw)))
         (return-from check-tagged nil))
       (check-type-ref ctx (xml-attr mapped "type") value))))
+
+(defun parse-identity-constraint (elem)
+  (let* ((kind (cond
+                 ((xml-named-p elem "unique") :unique)
+                 ((xml-named-p elem "key") :key)
+                 ((xml-named-p elem "keyref") :keyref)
+                 (t nil)))
+         (sel (and (xml-child elem "selector")
+                   (simple-xpath-step (xml-attr (xml-child elem "selector") "xpath"))))
+         (fields (mapcar (lambda (f) (simple-xpath-step (xml-attr f "xpath")))
+                         (xml-children-named elem "field"))))
+    (when (and kind sel (plusp (length fields)) (every #'identity fields))
+      (make-xsd-identity-constraint
+       :kind kind
+       :name (xml-attr elem "name")
+       :refer (xml-attr elem "refer")
+       :selector sel
+       :fields fields))))
+
+(defun element-constraints (elem)
+  (when (xml-element-p elem)
+    (mapcan (lambda (n)
+              (let ((c (parse-identity-constraint n)))
+                (and c (list c))))
+            (append (xml-children-named elem "unique")
+                    (xml-children-named elem "key")
+                    (xml-children-named elem "keyref")))))
 
 (defun compile-validator (source &key version)
   "XSD document → reusable validator (named type catalog)."
@@ -399,7 +505,8 @@
                                :types types
                                :elements elements
                                :root-element root-el
-                               :default-open default-open)))
+                               :default-open default-open
+                               :constraints (element-constraints root-el))))
 
 (defun root-type-node (validator)
   (let ((el (validator-root-element validator)))
@@ -412,6 +519,57 @@
                      (setf only v))
                    (validator-types validator))
           (and (= count 1) only)))))
+
+(defun xpath-step-values (ast value)
+  (when (null ast)
+    (return-from xpath-step-values '()))
+  (if (eq (first ast) :self)
+      (list value)
+      (let ((v (xpath-eval ast (list value))))
+        (cond
+          ((null v) '())
+          ((array-p v) (coerce v 'list))
+          ((and (listp v) (not (keywordp (first v)))) v)
+          (t (list v))))))
+
+(defun field-tuple (node fields)
+  (let ((acc '()))
+    (dolist (f fields)
+      (let ((vs (xpath-step-values f node)))
+        (when (or (null vs) (null (first vs)))
+          (return-from field-tuple nil))
+        (push (or (as-string (first vs)) (first vs)) acc)))
+    (nreverse acc)))
+
+(defun tuple-key (tuple)
+  (format nil "~{~A~^|~}" tuple))
+
+(defun check-identity-constraints (ctx value constraints)
+  (let ((sets (make-hash-table :test #'equal)))
+    (dolist (c constraints)
+      (when (member (constraint-kind c) '(:unique :key))
+        (let ((seen (make-hash-table :test #'equal)))
+          (dolist (node (xpath-step-values (constraint-selector c) value))
+            (let ((tup (field-tuple node (constraint-fields c))))
+              (cond
+                ((null tup)
+                 (when (eq (constraint-kind c) :key)
+                   (vfail ctx (format nil "key ~A missing field"
+                                      (constraint-name c))
+                          node)))
+                ((gethash (tuple-key tup) seen)
+                 (vfail ctx (format nil "~A duplicate" (constraint-kind c)) tup))
+                (t (setf (gethash (tuple-key tup) seen) t)))))
+          (when (constraint-name c)
+            (setf (gethash (constraint-name c) sets) seen)))))
+    (dolist (c constraints)
+      (when (eq (constraint-kind c) :keyref)
+        (let ((target (gethash (constraint-refer c) sets)))
+          (when target
+            (dolist (node (xpath-step-values (constraint-selector c) value))
+              (let ((tup (field-tuple node (constraint-fields c))))
+                (when (and tup (not (gethash (tuple-key tup) target)))
+                  (vfail ctx (format nil "keyref ~A" (constraint-name c)) tup))))))))))
 
 (defun validate-instance (schema instance)
   "Validate INSTANCE (hash-table / plist / XML string) against an XSD document.
@@ -432,7 +590,9 @@
            (let ((node (root-type-node validator)))
              (unless node
                (error 'xsd-schema-error :message "no root type to validate against"))
-             (check-node ctx node payload))))))
+             (check-node ctx node payload)))))
+      (when (validator-constraints validator)
+        (check-identity-constraints ctx payload (validator-constraints validator))))
     (when (vctx-issues ctx)
       (error 'xsd-schema-validation-error
              :issues (nreverse (vctx-issues ctx))))

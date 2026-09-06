@@ -7,7 +7,9 @@
   (ng (schema-protocol-xsd::xpath-true-p "count(tags) ge 1" (%ht "tags" #())))
   (ok (schema-protocol-xsd::xpath-true-p "$value mod 2 = 0" 4))
   (ng (schema-protocol-xsd::xpath-true-p "$value mod 2 = 0" 3))
-  (ok (schema-protocol-xsd::xpath-true-p "not(exists(x)) and r > 0" (%ht "r" 1.5))))
+  (ok (schema-protocol-xsd::xpath-true-p "not(exists(x)) and r > 0" (%ht "r" 1.5)))
+  (ok (schema-protocol-xsd::xpath-true-p "@id = 'p1'" (%ht "@id" "p1")))
+  (ok (schema-protocol-xsd::xpath-true-p "@id = 'p1'" (%ht "id" "p1"))))
 
 (deftest emit-1.1-schema-header
   (defschema %x11-plain ()

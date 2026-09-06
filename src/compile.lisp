@@ -77,28 +77,50 @@
     (and oc (not (string-equal (xml-attr oc "mode") "none")))))
 
 (defun extra-from (elem &optional ctx)
-  (cond
-    ((open-content-allows-p elem) :allow)
-    ((or (xml-child elem "any")
-         (and (xml-child elem "sequence")
-              (xml-child (xml-child elem "sequence") "any"))
-         (and (xml-child elem "choice")
-              (xml-child (xml-child elem "choice") "any"))
-         (and (xml-child elem "all")
-              (xml-child (xml-child elem "all") "any")))
-     :allow)
-    ((and ctx (compile-ctx-open-content ctx)
-          (not (string-equal (xml-attr (compile-ctx-open-content ctx) "mode") "none")))
-     :allow)
-    (t :forbid)))
+  (let ((n (content-node elem))
+        (seq (content-group elem)))
+    (cond
+      ((or (open-content-allows-p elem) (open-content-allows-p n)) :allow)
+      ((or (xml-child n "any")
+           (and seq (xml-child seq "any")))
+       :allow)
+      ((and ctx (compile-ctx-open-content ctx)
+            (not (string-equal (xml-attr (compile-ctx-open-content ctx) "mode") "none")))
+       :allow)
+      (t :forbid))))
 
 (defun alternatives-of (elem)
   (and (xml-element-p elem) (xml-children-named elem "alternative")))
 
+(defun complex-extension (node)
+  (let ((cc (xml-child node "complexContent")))
+    (or (and cc (xml-child cc "extension"))
+        (xml-child node "extension"))))
+
+(defun content-node (node)
+  (or (complex-extension node) node))
+
 (defun content-group (elem)
-  (or (xml-child elem "sequence")
-      (xml-child elem "choice")
-      (xml-child elem "all")))
+  (let ((n (content-node elem)))
+    (or (xml-child n "sequence")
+        (xml-child n "choice")
+        (xml-child n "all"))))
+
+(defun attributes-of (node)
+  (let ((n (content-node node)))
+    (remove-if (lambda (a) (string-equal (xml-attr a "use") "prohibited"))
+               (append (xml-children-named node "attribute")
+                       (unless (eq n node)
+                         (xml-children-named n "attribute"))))))
+
+(defun extension-super (ctx node)
+  (let* ((ext (complex-extension node))
+         (base (and ext (xml-attr ext "base"))))
+    (when (and base (not (xsd-builtin-p base)))
+      (%ensure-shell ctx base)
+      (let ((bnode (lookup-type ctx base)))
+        (when bnode (%fill-class ctx base bnode)))
+      (find-class (%name-symbol base ctx) nil))))
 
 (defun restriction-of (elem)
   (or (xml-child elem "restriction")
@@ -259,6 +281,29 @@
                 :optional ,(< min 1))
               (facet-slot-options elem)))))
 
+(defun attribute-type-spec (elem ctx)
+  (let ((type (xml-attr elem "type"))
+        (inline (xml-child elem "simpleType")))
+    (cond
+      (inline (simple-type-spec inline ctx))
+      (type (node-type-spec type ctx))
+      (t 'string))))
+
+(defun attribute-slot (elem ctx)
+  (let* ((name (xml-attr elem "name"))
+         (sym (%name-symbol name ctx))
+         (spec (attribute-type-spec elem ctx))
+         (required (string-equal (xml-attr elem "use") "required")))
+    (append `(:name ,sym
+              :type ,spec
+              :initargs (,(intern (symbol-name sym) :keyword))
+              :readers (,sym)
+              :writers ((setf ,sym))
+              :key ,(attribute-key name)
+              :required ,required
+              :optional ,(not required))
+            (facet-slot-options elem))))
+
 (defun discriminator-of (elem)
   (let* ((ann (xml-child elem "annotation"))
          (app (and ann (xml-child ann "appinfo")))
@@ -386,13 +431,18 @@
       (return-from %fill-class (find-class sym)))
     (setf (gethash sym (compile-ctx-filled ctx)) t)
     (let* ((seq (content-group node))
-           (slots '()))
+           (slots '())
+           (super (unless supers (extension-super ctx node))))
       (when seq
         (dolist (el (xml-children-named seq "element"))
           (push (property-slot el ctx) slots)))
+      (dolist (at (attributes-of node))
+        (push (attribute-slot at ctx) slots))
       (ensure-class sym
                     :metaclass (find-class 'schema-class)
-                    :direct-superclasses (or supers (list (find-class 'schema-object)))
+                    :direct-superclasses (or supers
+                                             (and super (list super))
+                                             (list (find-class 'schema-object)))
                     :direct-slots (nreverse slots)
                     :extra (extra-from node ctx))
       (find-class sym))))
